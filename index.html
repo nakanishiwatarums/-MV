@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playlist MV Player</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel-2: #20242d;
+    --text: #e8eaf0;
+    --muted: #9aa1b2;
+    --accent: #25d1da;
+    --accent-2: #ff9900;
+    --danger: #ff5c6c;
+    --border: #2b303b;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f5f8;
+      --panel: #ffffff;
+      --panel-2: #eef0f4;
+      --text: #1b1e25;
+      --muted: #5d6475;
+      --accent: #0a9aa3;
+      --accent-2: #d97f00;
+      --danger: #d6293b;
+      --border: #d9dce4;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 1.2rem; margin: 0; }
+  header .sub { color: var(--muted); font-size: .85rem; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 16px;
+    padding: 16px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section, aside {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  h2 { font-size: 1rem; margin: 0 0 12px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+  }
+  textarea { min-height: 160px; resize: vertical; font-family: ui-monospace, monospace; font-size: .85rem; }
+  button {
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+  .tabs button.active { border-color: var(--accent-2); color: var(--accent-2); }
+  .hint { font-size: .8rem; color: var(--muted); margin: 6px 0 0; }
+  .player-wrap { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; overflow: hidden; }
+  .player-wrap #player, .player-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #889; text-align: center; padding: 16px; }
+  .now { margin-top: 12px; }
+  .now .t { font-size: 1.1rem; font-weight: 600; }
+  .now .a { color: var(--muted); }
+  .now .v { font-size: .8rem; color: var(--muted); margin-top: 2px; word-break: break-all; }
+  ol#queue { list-style: none; padding: 0; margin: 0; max-height: 60vh; overflow-y: auto; }
+  ol#queue li {
+    display: grid; grid-template-columns: 28px 48px minmax(0,1fr); gap: 8px; align-items: center;
+    padding: 6px; border-radius: 8px; cursor: pointer;
+  }
+  ol#queue li:hover { background: var(--panel-2); }
+  ol#queue li.current { background: var(--panel-2); outline: 1px solid var(--accent); }
+  ol#queue li .n { color: var(--muted); font-size: .8rem; text-align: right; }
+  ol#queue li img, ol#queue li .noimg { width: 48px; height: 27px; object-fit: cover; border-radius: 4px; background: var(--border); }
+  ol#queue li .meta { min-width: 0; }
+  ol#queue li .meta div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  ol#queue li .meta .ar { font-size: .8rem; color: var(--muted); }
+  ol#queue li.failed .meta .ti { color: var(--danger); text-decoration: line-through; }
+  .status { font-size: .85rem; color: var(--muted); min-height: 1.3em; margin-top: 8px; }
+  .status.err { color: var(--danger); }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎬 Playlist MV Player</h1>
+  <span class="sub">Amazon Music のプレイリストを YouTube のミュージックビデオで順番に再生</span>
+</header>
+
+<main>
+  <div>
+    <section>
+      <div class="player-wrap">
+        <div id="player"></div>
+        <div class="placeholder" id="placeholder">プレイリストを読み込んで「MVを検索して再生」を押してください</div>
+      </div>
+      <div class="now" id="now">
+        <div class="t" id="nowTitle">—</div>
+        <div class="a" id="nowArtist"></div>
+        <div class="v" id="nowVideo"></div>
+      </div>
+      <div class="row">
+        <button id="prevBtn" disabled>⏮ 前へ</button>
+        <button id="playPauseBtn" disabled>⏯ 再生/一時停止</button>
+        <button id="nextBtn" disabled>⏭ 次へ</button>
+        <label class="check"><input type="checkbox" id="shuffle"> シャッフル</label>
+        <label class="check"><input type="checkbox" id="loop" checked> ループ</label>
+      </div>
+    </section>
+
+    <section style="margin-top:16px">
+      <h2>1. プレイリストを取得</h2>
+      <div class="tabs">
+        <button data-tab="paste" class="active">テキスト貼り付け</button>
+        <button data-tab="api">Amazon Music API</button>
+      </div>
+
+      <div id="tab-paste">
+        <label for="pasteArea">曲リスト（1行1曲：「曲名 - アーティスト」/ CSV / タブ区切り / Amazon Music Web からのコピーに対応）</label>
+        <textarea id="pasteArea" placeholder="Lemon - 米津玄師&#10;Pretender - Official髭男dism&#10;夜に駆ける - YOASOBI"></textarea>
+        <p class="hint">Amazon Music Web 版（music.amazon.co.jp）でプレイリストを開き、曲一覧を選択してコピー → そのまま貼り付けでも解析を試みます。</p>
+        <div class="row"><button id="parseBtn">リストを読み込む</button></div>
+      </div>
+
+      <div id="tab-api" hidden>
+        <p class="hint">Amazon Music Web API はクローズドベータです。開発者登録・承認済みで、Login with Amazon のアクセストークンを持っている場合のみ利用できます。</p>
+        <label for="amzUrl">プレイリスト URL または ID</label>
+        <input type="text" id="amzUrl" placeholder="https://music.amazon.co.jp/playlists/B0XXXXXXXX">
+        <label for="amzToken">アクセストークン（Bearer）</label>
+        <input type="password" id="amzToken" autocomplete="off">
+        <label for="amzKey">x-api-key（セキュリティプロファイル ID）</label>
+        <input type="password" id="amzKey" autocomplete="off">
+        <div class="row"><button id="amzFetchBtn">API から取得</button></div>
+      </div>
+    </section>
+
+    <section style="margin-top:16px">
+      <h2>2. YouTube 設定</h2>
+      <label for="ytKey">YouTube Data API v3 キー</label>
+      <input type="password" id="ytKey" autocomplete="off" placeholder="AIza...">
+      <p class="hint">Google Cloud Console で YouTube Data API v3 を有効化して API キーを発行してください。検索1回あたり 100 クォータ（無料枠は 1日 10,000 ＝ 約100曲）。検索結果はブラウザにキャッシュされます。</p>
+      <label for="suffix">検索キーワードに付ける語</label>
+      <input type="text" id="suffix" value="official music video">
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="remember" checked> キーと設定をこのブラウザに保存する</label>
+    </section>
+  </div>
+
+  <aside>
+    <h2>再生キュー <span id="count" class="sub"></span></h2>
+    <div class="row" style="margin-top:0;margin-bottom:12px">
+      <button class="primary" id="startBtn" disabled>▶ MVを検索して再生</button>
+      <button id="clearCacheBtn">キャッシュ削除</button>
+    </div>
+    <ol id="queue"></ol>
+    <div class="status" id="status"></div>
+  </aside>
+</main>
+
+<script>
+(() => {
+  // ---------- 保存（失敗しても動くように） ----------
+  const store = {
+    get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    tracks: [],      // {title, artist, videos: [{id,title,thumb}], vIdx, failed}
+    order: [],       // 再生順（tracks のインデックス）
+    pos: -1,         // order 上の位置
+    player: null,
+    playerReady: false,
+    cache: store.get('mvCache', {}),
+  };
+
+  // ---------- 設定の復元 ----------
+  const settings = store.get('settings', {});
+  $('ytKey').value = settings.ytKey || '';
+  $('suffix').value = settings.suffix ?? 'official music video';
+  $('amzKey').value = settings.amzKey || '';
+  $('amzUrl').value = settings.amzUrl || '';
+  $('remember').checked = settings.remember ?? true;
+  $('pasteArea').value = store.get('lastPaste', '');
+
+  function saveSettings() {
+    if (!$('remember').checked) { store.del('settings'); return; }
+    store.set('settings', {
+      ytKey: $('ytKey').value.trim(),
+      suffix: $('suffix').value,
+      amzKey: $('amzKey').value.trim(),
+      amzUrl: $('amzUrl').value.trim(),
+      remember: true,
+    });
+  }
+  ['ytKey', 'suffix', 'amzKey', 'amzUrl', 'remember'].forEach(id => $(id).addEventListener('change', saveSettings));
+
+  function setStatus(msg, isErr = false) {
+    $('status').textContent = msg;
+    $('status').classList.toggle('err', isErr);
+  }
+
+  // ---------- タブ ----------
+  document.querySelectorAll('.tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b === btn));
+      $('tab-paste').hidden = btn.dataset.tab !== 'paste';
+      $('tab-api').hidden = btn.dataset.tab !== 'api';
+    });
+  });
+
+  // ---------- テキスト解析 ----------
+  const DURATION = /^\d{1,2}:\d{2}(:\d{2})?$/;
+  const NOISE = /^(曲名|タイトル|title|アーティスト|artist|アルバム|album|時間|duration|#|\d+|explicit|e|hd|uhd|lyrics|歌詞)$/i;
+
+  function parseTrackText(text) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const out = [];
+
+    // 1) 1行完結の形式（区切り文字あり）
+    const single = [];
+    for (const line of lines) {
+      const cols = line.includes('\t') ? line.split('\t') : null;
+      if (cols && cols.length >= 2) {
+        const c = cols.map(s => s.trim()).filter(s => s && !DURATION.test(s) && !/^\d+$/.test(s));
+        if (c.length >= 2) { single.push({ title: c[0], artist: c[1] }); continue; }
+      }
+      const m = line.match(/^(?:\d+[.)]\s*)?(.+?)\s+[-–—\/／]\s+(.+)$/);
+      if (m) { single.push({ title: m[1].trim(), artist: m[2].trim() }); continue; }
+      const csv = line.match(/^"?([^",]+)"?\s*,\s*"?([^",]+)"?/);
+      if (csv) { single.push({ title: csv[1].trim(), artist: csv[2].trim() }); continue; }
+      single.push(null);
+    }
+    const hits = single.filter(Boolean).length;
+    if (hits && hits >= lines.length * 0.6) {
+      return single.filter(Boolean).filter(t => !NOISE.test(t.title));
+    }
+
+    // 2) Amazon Music Web からのコピー（曲名・アーティスト・アルバム・時間が別行）
+    //    時間表記 (3:45) を区切りとしてブロックに分割する
+    let block = [];
+    const flush = () => {
+      const b = block.filter(s => !NOISE.test(s));
+      if (b.length >= 2) out.push({ title: b[0], artist: b[1] });
+      else if (b.length === 1) out.push({ title: b[0], artist: '' });
+      block = [];
+    };
+    for (const line of lines) {
+      if (DURATION.test(line)) flush(); else block.push(line);
+    }
+    flush();
+    if (out.length > 1) return out;
+
+    // 3) 最終手段：1行1曲（アーティスト不明）
+    return lines.filter(l => !NOISE.test(l)).map(l => ({ title: l, artist: '' }));
+  }
+
+  // ---------- Amazon Music API（ベータ） ----------
+  function extractPlaylistId(input) {
+    const s = input.trim();
+    try {
+      const u = new URL(s);
+      const parts = u.pathname.split('/').filter(Boolean);
+      return parts[parts.length - 1];
+    } catch { return s; }
+  }
+
+  // レスポンス形式の違いに耐えるため、title と artist を持つノードを再帰的に探す
+  function collectTracks(json) {
+    const found = [];
+    const seen = new Set();
+    const artistName = (n) => {
+      const a = n.artists || n.artist || n.primaryArtist || n.artistName;
+      if (!a) return '';
+      if (typeof a === 'string') return a;
+      if (Array.isArray(a)) return a.map(x => (typeof x === 'string' ? x : x?.name || x?.node?.name || '')).filter(Boolean).join(', ');
+      if (a.edges) return a.edges.map(e => e?.node?.name).filter(Boolean).join(', ');
+      return a.name || '';
+    };
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      const title = n.title || n.name;
+      const artist = artistName(n);
+      const isTrack = typeof title === 'string' && artist && (n.duration !== undefined || n.isrc || n.id || n.asin || n.__typename === 'Track');
+      if (isTrack) {
+        const key = (n.id || n.asin || '') + title + artist;
+        if (!seen.has(key)) { seen.add(key); found.push({ title, artist }); }
+        return;
+      }
+      Object.values(n).forEach(walk);
+    };
+    walk(json);
+    return found;
+  }
+
+  async function fetchAmazonPlaylist() {
+    const id = extractPlaylistId($('amzUrl').value);
+    const token = $('amzToken').value.trim();
+    const key = $('amzKey').value.trim();
+    if (!id || !token || !key) { setStatus('プレイリスト ID・トークン・x-api-key をすべて入力してください', true); return; }
+    saveSettings();
+    setStatus('Amazon Music から取得中…');
+    const all = [];
+    let cursor = null;
+    try {
+      for (let page = 0; page < 20; page++) {
+        const u = new URL(`https://api.music.amazon.dev/v1/playlists/${encodeURIComponent(id)}/tracks`);
+        u.searchParams.set('limit', '100');
+        if (cursor) u.searchParams.set('cursor', cursor);
+        const res = await fetch(u, { headers: { Authorization: `Bearer ${token}`, 'x-api-key': key, Accept: 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text().catch(() => '')}`.slice(0, 300));
+        const json = await res.json();
+        all.push(...collectTracks(json));
+        const pi = json?.data?.playlist?.tracks?.pageInfo || json?.pageInfo || {};
+        cursor = pi.hasNextPage ? (pi.endCursor || pi.token) : (json.nextCursor || null);
+        if (!cursor) break;
+      }
+      if (!all.length) throw new Error('曲が見つかりませんでした（レスポンス形式が想定と異なる可能性があります）');
+      loadTracks(all);
+    } catch (e) {
+      setStatus(`取得失敗: ${e.message}。CORS やベータ未承認の場合は「テキスト貼り付け」をご利用ください。`, true);
+    }
+  }
+
+  // ---------- キュー ----------
+  function loadTracks(list) {
+    state.tracks = list.map(t => ({ ...t, videos: null, vIdx: 0, failed: false }));
+    state.pos = -1;
+    buildOrder();
+    renderQueue();
+    $('startBtn').disabled = !state.tracks.length;
+    setStatus(`${state.tracks.length} 曲を読み込みました`);
+  }
+
+  function buildOrder() {
+    state.order = state.tracks.map((_, i) => i);
+    if ($('shuffle').checked) {
+      for (let i = state.order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [state.order[i], state.order[j]] = [state.order[j], state.order[i]];
+      }
+    }
+  }
+
+  function renderQueue() {
+    const ol = $('queue');
+    ol.innerHTML = '';
+    $('count').textContent = state.tracks.length ? `(${state.tracks.length}曲)` : '';
+    state.order.forEach((ti, p) => {
+      const t = state.tracks[ti];
+      const li = document.createElement('li');
+      li.className = (p === state.pos ? 'current ' : '') + (t.failed ? 'failed' : '');
+      const v = t.videos?.[t.vIdx];
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = p + 1;
+      let thumb;
+      if (v?.thumb) { thumb = document.createElement('img'); thumb.src = v.thumb; thumb.alt = ''; thumb.loading = 'lazy'; }
+      else { thumb = document.createElement('span'); thumb.className = 'noimg'; }
+      const meta = document.createElement('div'); meta.className = 'meta';
+      const ti_ = document.createElement('div'); ti_.className = 'ti'; ti_.textContent = t.title;
+      const ar = document.createElement('div'); ar.className = 'ar'; ar.textContent = t.artist || '—';
+      meta.append(ti_, ar);
+      li.append(n, thumb, meta);
+      li.addEventListener('click', () => playAt(p));
+      ol.append(li);
+    });
+    const cur = ol.querySelector('.current');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  }
+
+  // ---------- YouTube 検索 ----------
+  const decode = (s) => { const d = document.createElement('textarea'); d.innerHTML = s; return d.value; };
+
+  async function searchVideos(track) {
+    const q = [track.artist, track.title, $('suffix').value.trim()].filter(Boolean).join(' ');
+    if (state.cache[q]) return state.cache[q];
+    const key = $('ytKey').value.trim();
+    if (!key) throw new Error('YouTube API キーを入力してください');
+    const u = new URL('https://www.googleapis.com/youtube/v3/search');
+    Object.entries({
+      part: 'snippet', type: 'video', videoEmbeddable: 'true', maxResults: '5', q, key,
+    }).forEach(([k, v]) => u.searchParams.set(k, v));
+    const res = await fetch(u);
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`);
+    const videos = (json.items || []).map(it => ({
+      id: it.id.videoId,
+      title: decode(it.snippet.title),
+      channel: decode(it.snippet.channelTitle),
+      thumb: it.snippet.thumbnails?.default?.url,
+    }));
+    state.cache[q] = videos;
+    store.set('mvCache', state.cache);
+    return videos;
+  }
+
+  // ---------- プレイヤー ----------
+  window.onYouTubeIframeAPIReady = () => {
+    state.player = new YT.Player('player', {
+      playerVars: { autoplay: 1, rel: 0, playsinline: 1 },
+      events: {
+        onReady: () => { state.playerReady = true; },
+        onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) next(); },
+        onError: onPlayerError,
+      },
+    });
+  };
+
+  function onPlayerError(e) {
+    // 2: 不正ID, 5: HTML5エラー, 100: 削除/非公開, 101/150: 埋め込み不可
+    const t = currentTrack();
+    if (!t) return;
+    t.vIdx++;
+    if (t.videos && t.vIdx < t.videos.length) {
+      setStatus(`再生できない動画のため候補 ${t.vIdx + 1} を試します (code ${e.data})`);
+      loadVideo(t);
+    } else {
+      t.failed = true;
+      setStatus(`「${t.title}」は再生可能な動画が見つからずスキップしました`, true);
+      renderQueue();
+      next();
+    }
+  }
+
+  const currentTrack = () => state.tracks[state.order[state.pos]];
+
+  function loadVideo(t) {
+    const v = t.videos[t.vIdx];
+    $('placeholder').hidden = true;
+    $('nowVideo').textContent = `▶ ${v.title}（${v.channel}）`;
+    state.player.loadVideoById(v.id);
+    renderQueue();
+  }
+
+  let playToken = 0;
+  async function playAt(p) {
+    if (!state.playerReady) { setStatus('YouTube プレイヤーを準備中です。少し待ってから再度お試しください', true); return; }
+    if (p < 0 || p >= state.order.length) return;
+    const my = ++playToken;
+    state.pos = p;
+    const t = currentTrack();
+    $('nowTitle').textContent = t.title;
+    $('nowArtist').textContent = t.artist;
+    $('nowVideo').textContent = '検索中…';
+    ['prevBtn', 'playPauseBtn', 'nextBtn'].forEach(id => $(id).disabled = false);
+    renderQueue();
+    try {
+      if (!t.videos) { t.videos = await searchVideos(t); t.vIdx = 0; }
+      if (my !== playToken) return; // 検索中に別の曲が選ばれた
+      if (!t.videos.length) throw new Error('検索結果が 0 件');
+      t.failed = false;
+      setStatus(`${p + 1} / ${state.order.length} 曲目を再生中`);
+      loadVideo(t);
+      prefetch(p + 1);
+    } catch (e) {
+      if (my !== playToken) return;
+      t.failed = true;
+      renderQueue();
+      setStatus(`「${t.title}」: ${e.message}`, true);
+      if (/quota|API キー|API key/i.test(e.message)) return; // キー/クォータ問題は連続スキップしない
+      setTimeout(() => { if (my === playToken) next(); }, 1200);
+    }
+  }
+
+  // 次の曲を先に検索しておき、曲間の待ち時間を減らす
+  async function prefetch(p) {
+    const t = state.tracks[state.order[p]];
+    if (t && !t.videos) { try { t.videos = await searchVideos(t); renderQueue(); } catch {} }
+  }
+
+  function next() {
+    if (state.pos + 1 < state.order.length) playAt(state.pos + 1);
+    else if ($('loop').checked && state.order.length) playAt(0);
+    else setStatus('プレイリストの最後まで再生しました');
+  }
+  function prev() { if (state.pos > 0) playAt(state.pos - 1); }
+
+  // ---------- イベント ----------
+  $('parseBtn').addEventListener('click', () => {
+    const text = $('pasteArea').value;
+    store.set('lastPaste', text);
+    const list = parseTrackText(text);
+    if (!list.length) { setStatus('曲を読み取れませんでした', true); return; }
+    loadTracks(list);
+  });
+  $('amzFetchBtn').addEventListener('click', fetchAmazonPlaylist);
+  $('startBtn').addEventListener('click', () => { saveSettings(); playAt(0); });
+  $('nextBtn').addEventListener('click', next);
+  $('prevBtn').addEventListener('click', prev);
+  $('playPauseBtn').addEventListener('click', () => {
+    if (!state.player) return;
+    state.player.getPlayerState() === YT.PlayerState.PLAYING ? state.player.pauseVideo() : state.player.playVideo();
+  });
+  $('shuffle').addEventListener('change', () => {
+    const curTi = state.order[state.pos];
+    buildOrder();
+    if (curTi !== undefined) {
+      // 再生中の曲を先頭に移動して続きから
+      state.order = [curTi, ...state.order.filter(i => i !== curTi)];
+      state.pos = 0;
+    }
+    renderQueue();
+  });
+  $('clearCacheBtn').addEventListener('click', () => {
+    state.cache = {}; store.del('mvCache');
+    state.tracks.forEach(t => { t.videos = null; t.vIdx = 0; t.failed = false; });
+    renderQueue();
+    setStatus('検索キャッシュを削除しました');
+  });
+})();
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
