@@ -7,6 +7,7 @@ Amazon Music のプレイリストの曲を、YouTube のミュージックビ�
 1. `index.html` をブラウザで開く（または `python3 -m http.server` などでローカル配信）
 2. **プレイリストを取得**
    - **テキスト貼り付け**（推奨）: 「曲名 - アーティスト」を1行1曲で貼り付け。Amazon Music Web 版の曲一覧をコピーしたテキストもそのまま解析を試みます
+   - **Spotify**: Client ID を入力して Spotify でログインし、自分のプレイリストを選択（初回は Spotify Developer Dashboard でアプリ作成と Redirect URI 登録が必要。https で公開したページでのみ動作）
    - **Amazon Music API**: クローズドベータの Amazon Music Web API を使える場合のみ。アクセストークンと x-api-key が必要
 3. **YouTube Data API v3 キー**を入力
 4. 「▶ MVを検索して再生」で自動再生。曲が終わると次の曲へ進みます

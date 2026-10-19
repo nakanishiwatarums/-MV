@@ -60,6 +60,7 @@
     padding: 16px;
   }
   h2 { font-size: 1rem; margin: 0 0 12px; }
+  a { color: var(--accent); }
   label { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 4px; }
   input[type=text], input[type=password], textarea, select {
     width: 100%;
@@ -145,6 +146,7 @@
       <h2>1. プレイリストを取得</h2>
       <div class="tabs">
         <button data-tab="paste" class="active">テキスト貼り付け</button>
+        <button data-tab="spotify">Spotify</button>
         <button data-tab="api">Amazon Music API</button>
       </div>
 
@@ -153,6 +155,30 @@
         <textarea id="pasteArea" placeholder="Lemon - 米津玄師&#10;Pretender - Official髭男dism&#10;夜に駆ける - YOASOBI"></textarea>
         <p class="hint">Amazon Music Web 版（music.amazon.co.jp）でプレイリストを開き、曲一覧を選択してコピー → そのまま貼り付けでも解析を試みます。</p>
         <div class="row"><button id="parseBtn">リストを読み込む</button></div>
+      </div>
+
+      <div id="tab-spotify" hidden>
+        <p class="hint">Spotify にログインして、自分のプレイリスト（または URL を指定したプレイリスト）の曲を取り込みます。初回のみ <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a> でアプリを作成し、下の Redirect URI を登録して Client ID を貼り付けてください（API は「Web API」にチェック）。</p>
+        <label for="spRedirect">Redirect URI（ダッシュボードに登録する値）</label>
+        <div class="row" style="margin-top:0">
+          <input type="text" id="spRedirect" readonly style="flex:1;min-width:0">
+          <button id="spCopyBtn">コピー</button>
+        </div>
+        <label for="spClientId">Client ID</label>
+        <input type="text" id="spClientId" autocomplete="off" placeholder="32桁の英数字">
+        <div class="row">
+          <button id="spLoginBtn">Spotify でログイン</button>
+          <button id="spLogoutBtn" hidden>ログアウト</button>
+          <span class="sub" id="spUser"></span>
+        </div>
+        <div id="spPicker" hidden>
+          <label for="spPlaylists">自分のプレイリスト</label>
+          <select id="spPlaylists"></select>
+          <label for="spUrl">または プレイリスト URL / ID</label>
+          <input type="text" id="spUrl" placeholder="https://open.spotify.com/playlist/xxxxxxxx">
+          <div class="row"><button id="spFetchBtn">プレイリストを取得</button></div>
+          <p class="hint">開発モードのアプリでは、ダッシュボードの「User Management」に登録したアカウントでしかログインできません。自分以外が作ったプレイリストは取得できない場合があります。</p>
+        </div>
       </div>
 
       <div id="tab-api" hidden>
@@ -224,6 +250,7 @@
       suffix: $('suffix').value,
       amzKey: $('amzKey').value.trim(),
       amzUrl: $('amzUrl').value.trim(),
+      spClientId: $('spClientId').value.trim(),
       remember: true,
     });
   }
@@ -238,8 +265,8 @@
   document.querySelectorAll('.tabs button').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b === btn));
-      $('tab-paste').hidden = btn.dataset.tab !== 'paste';
-      $('tab-api').hidden = btn.dataset.tab !== 'api';
+      ['paste', 'spotify', 'api'].forEach(t => { $('tab-' + t).hidden = btn.dataset.tab !== t; });
+      store.set('tab', btn.dataset.tab);
     });
   });
 
@@ -356,6 +383,165 @@
       setStatus(`取得失敗: ${e.message}。CORS やベータ未承認の場合は「テキスト貼り付け」をご利用ください。`, true);
     }
   }
+
+  // ---------- Spotify（Authorization Code + PKCE） ----------
+  const SP_REDIRECT = location.origin + location.pathname;
+  const SP_SCOPES = 'playlist-read-private playlist-read-collaborative';
+  $('spRedirect').value = SP_REDIRECT;
+  $('spClientId').value = settings.spClientId || store.get('spClientId', '');
+
+  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const randomStr = (n) => b64url(crypto.getRandomValues(new Uint8Array(n))).slice(0, n);
+
+  async function spLogin() {
+    const clientId = $('spClientId').value.trim();
+    if (!clientId) { setStatus('Spotify の Client ID を入力してください', true); return; }
+    if (!window.isSecureContext) { setStatus('Spotify ログインは https または http://127.0.0.1 で開いたページでのみ使えます', true); return; }
+    store.set('spClientId', clientId);
+    saveSettings();
+    const verifier = randomStr(64);
+    const state_ = randomStr(16);
+    store.set('spPkce', { verifier, state: state_ });
+    const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+    const u = new URL('https://accounts.spotify.com/authorize');
+    Object.entries({
+      client_id: clientId, response_type: 'code', redirect_uri: SP_REDIRECT, scope: SP_SCOPES,
+      code_challenge_method: 'S256', code_challenge: challenge, state: state_,
+    }).forEach(([k, v]) => u.searchParams.set(k, v));
+    location.href = u;
+  }
+
+  async function spTokenRequest(params) {
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: store.get('spClientId', ''), ...params }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error_description || json.error || `HTTP ${res.status}`);
+    const prev = store.get('spToken', {});
+    const tok = {
+      access: json.access_token,
+      refresh: json.refresh_token || prev.refresh,
+      expires: Date.now() + (json.expires_in - 60) * 1000,
+    };
+    store.set('spToken', tok);
+    return tok;
+  }
+
+  // ログイン後のリダイレクトで戻ってきたとき
+  async function spHandleRedirect() {
+    const q = new URLSearchParams(location.search);
+    if (!q.has('code') && !q.has('error')) return;
+    history.replaceState(null, '', SP_REDIRECT);
+    const pkce = store.get('spPkce', {});
+    store.del('spPkce');
+    if (q.has('error')) { setStatus(`Spotify ログインがキャンセルされました (${q.get('error')})`, true); return; }
+    if (q.get('state') !== pkce.state) { setStatus('Spotify ログインの検証に失敗しました。もう一度ログインしてください', true); return; }
+    try {
+      await spTokenRequest({ grant_type: 'authorization_code', code: q.get('code'), redirect_uri: SP_REDIRECT, code_verifier: pkce.verifier });
+    } catch (e) { setStatus(`Spotify ログイン失敗: ${e.message}`, true); }
+  }
+
+  async function spAccessToken() {
+    const tok = store.get('spToken', null);
+    if (!tok?.access) return null;
+    if (Date.now() < tok.expires) return tok.access;
+    if (!tok.refresh) return null;
+    try { return (await spTokenRequest({ grant_type: 'refresh_token', refresh_token: tok.refresh })).access; }
+    catch { store.del('spToken'); return null; }
+  }
+
+  async function spApi(pathOrUrl) {
+    const token = await spAccessToken();
+    if (!token) { spRenderLoggedOut(); throw new Error('Spotify にログインしてください'); }
+    const url = pathOrUrl.startsWith('http') ? pathOrUrl : 'https://api.spotify.com/v1' + pathOrUrl;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status === 401) { store.del('spToken'); spRenderLoggedOut(); throw new Error('ログインの有効期限が切れました。もう一度ログインしてください'); }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { const err = new Error(json?.error?.message || `HTTP ${res.status}`); err.status = res.status; throw err; }
+    return json;
+  }
+
+  function spRenderLoggedOut() {
+    $('spPicker').hidden = true;
+    $('spLogoutBtn').hidden = true;
+    $('spLoginBtn').hidden = false;
+    $('spUser').textContent = '';
+  }
+
+  async function spInit() {
+    await spHandleRedirect();
+    if (!(await spAccessToken())) { spRenderLoggedOut(); return; }
+    try {
+      const me = await spApi('/me');
+      $('spUser').textContent = `ログイン中: ${me.display_name || me.id}`;
+      $('spLoginBtn').hidden = true;
+      $('spLogoutBtn').hidden = false;
+      $('spPicker').hidden = false;
+      const sel = $('spPlaylists');
+      sel.innerHTML = '<option value="">（URL を指定する）</option>';
+      let next = '/me/playlists?limit=50';
+      for (let i = 0; next && i < 10; i++) {
+        const page = await spApi(next);
+        (page.items || []).filter(Boolean).forEach(pl => {
+          const o = document.createElement('option');
+          o.value = pl.id;
+          const n = pl.tracks?.total ?? pl.items?.total;
+          o.textContent = n != null ? `${pl.name}（${n}曲）` : pl.name;
+          sel.append(o);
+        });
+        next = page.next;
+      }
+      document.querySelector('.tabs button[data-tab="spotify"]').click();
+    } catch (e) { setStatus(`Spotify: ${e.message}`, true); }
+  }
+
+  function spPlaylistId(input) {
+    const s = input.trim();
+    const m = s.match(/playlist[/:]([A-Za-z0-9]+)/);
+    return m ? m[1] : s;
+  }
+
+  async function spFetchPlaylist() {
+    const id = $('spPlaylists').value || spPlaylistId($('spUrl').value);
+    if (!id) { setStatus('プレイリストを選ぶか URL を入力してください', true); return; }
+    setStatus('Spotify から取得中…');
+    try {
+      // 新しい /items エンドポイントを優先し、使えなければ従来の /tracks を使う
+      let pages;
+      try { pages = await spCollect(`/playlists/${id}/items?limit=50`); }
+      catch (e) { if (e.status !== 404 && e.status !== 403) throw e; pages = await spCollect(`/playlists/${id}/tracks?limit=50`); }
+      const list = pages
+        .map(it => it.track || it.item)
+        .filter(t => t && t.type !== 'episode' && t.name)
+        .map(t => ({ title: t.name, artist: (t.artists || []).map(a => a.name).join(', ') }));
+      if (!list.length) throw new Error('曲が見つかりませんでした');
+      loadTracks(list);
+    } catch (e) {
+      setStatus(`取得失敗: ${e.message}${e.status === 403 || e.status === 404 ? '（自分が作成・参加していないプレイリストは取得できない場合があります）' : ''}`, true);
+    }
+  }
+
+  async function spCollect(first) {
+    const items = [];
+    let next = first;
+    for (let i = 0; next && i < 40; i++) {
+      const page = await spApi(next);
+      items.push(...(page.items || []));
+      next = page.next;
+    }
+    return items;
+  }
+
+  $('spLoginBtn').addEventListener('click', spLogin);
+  $('spLogoutBtn').addEventListener('click', () => { store.del('spToken'); spRenderLoggedOut(); setStatus('Spotify からログアウトしました'); });
+  $('spFetchBtn').addEventListener('click', spFetchPlaylist);
+  $('spClientId').addEventListener('change', () => { store.set('spClientId', $('spClientId').value.trim()); saveSettings(); });
+  $('spCopyBtn').addEventListener('click', () => {
+    navigator.clipboard.writeText(SP_REDIRECT).then(() => setStatus('Redirect URI をコピーしました'), () => $('spRedirect').select());
+  });
+  $('spPlaylists').addEventListener('change', () => { $('spUrl').disabled = !!$('spPlaylists').value; });
 
   // ---------- キュー ----------
   function loadTracks(list) {
@@ -541,6 +727,10 @@
     renderQueue();
     setStatus('検索キャッシュを削除しました');
   });
+
+  const savedTab = store.get('tab', 'paste');
+  document.querySelector(`.tabs button[data-tab="${savedTab}"]`)?.click();
+  spInit();
 })();
 </script>
 <script src="https://www.youtube.com/iframe_api"></script>
