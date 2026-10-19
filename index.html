@@ -657,7 +657,12 @@
     }).forEach(([k, v]) => u.searchParams.set(k, v));
     const res = await fetch(u);
     const json = await res.json();
-    if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`);
+    if (!res.ok) {
+      let msg = json?.error?.message || `HTTP ${res.status}`;
+      if (/are blocked|has not been used|is disabled/i.test(msg)) msg += ' → API キーで YouTube Data API v3 が許可されていません。Google Cloud Console で API を有効化し、キーの「API の制限」に YouTube Data API v3 を追加してください';
+      else if (/referer|referrer/i.test(msg)) msg += ' → API キーの「ウェブサイトの制限」にこのページの URL を追加してください';
+      throw new Error(msg);
+    }
     const videos = (json.items || []).map(it => ({
       id: it.id.videoId,
       title: decode(it.snippet.title),
