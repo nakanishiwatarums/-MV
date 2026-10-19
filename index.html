@@ -115,6 +115,16 @@
   summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
   .filebtn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
   .filebtn:hover { border-color: var(--accent); }
+  #candidates { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .cand-head { font-size: .9rem; margin: 0 0 8px; }
+  .cand-head .sub { font-weight: normal; color: var(--muted); font-size: .8rem; }
+  .cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .cand { display: flex; flex-direction: column; gap: 4px; padding: 6px; text-align: left; min-width: 0; }
+  .cand img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--border); }
+  .cand .ct { font-size: .8rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .cand .cc { font-size: .75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cand.current { border-color: var(--accent); outline: 1px solid var(--accent); }
+  .cand.bad { opacity: .45; }
   .check { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); margin: 0; }
 </style>
 </head>
@@ -140,8 +150,17 @@
         <button id="prevBtn" disabled>⏮ 前へ</button>
         <button id="playPauseBtn" disabled>⏯ 再生/一時停止</button>
         <button id="nextBtn" disabled>⏭ 次へ</button>
+        <button id="altBtn" disabled>🔁 別の候補</button>
         <label class="check"><input type="checkbox" id="shuffle"> シャッフル</label>
         <label class="check"><input type="checkbox" id="loop" checked> ループ</label>
+      </div>
+      <div id="candidates" hidden>
+        <h3 class="cand-head">この曲の動画候補 <span class="sub">（選んだ動画は次回も優先されます）</span></h3>
+        <div class="cands" id="candList"></div>
+        <form class="row" id="researchForm">
+          <input type="text" id="researchQ" placeholder="キーワードを変えて検索（例: 米津玄師 Lemon live）" style="flex:1;min-width:0">
+          <button type="submit">検索</button>
+        </form>
       </div>
     </section>
 
@@ -647,8 +666,20 @@
   // ---------- YouTube 検索 ----------
   const decode = (s) => { const d = document.createElement('textarea'); d.innerHTML = s; return d.value; };
 
-  async function searchVideos(track) {
-    const q = [track.artist, track.title, $('suffix').value.trim()].filter(Boolean).join(' ');
+  const trackKey = (t) => `${t.artist}\u0000${t.title}`;
+  const defaultQuery = (t) => [t.artist, t.title, $('suffix').value.trim()].filter(Boolean).join(' ');
+  state.choice = store.get('mvChoice', {});   // 曲ごとにユーザーが選んだ動画 ID
+
+  // 検索結果を取得し、以前選んだ動画があればそれを再生対象にする
+  async function loadCandidates(t, query) {
+    const saved = state.choice[trackKey(t)];
+    t.query = query || saved?.q || defaultQuery(t);
+    t.videos = await searchVideos(t.query);
+    const i = t.videos.findIndex(v => v.id === saved?.id);
+    t.vIdx = i >= 0 ? i : 0;
+  }
+
+  async function searchVideos(q) {
     if (state.cache[q]) return state.cache[q];
     const key = $('ytKey').value.trim();
     if (!key) throw new Error('YouTube API キーを入力してください');
@@ -691,8 +722,10 @@
     // 2: 不正ID, 5: HTML5エラー, 100: 削除/非公開, 101/150: 埋め込み不可
     const t = currentTrack();
     if (!t) return;
-    t.vIdx++;
-    if (t.videos && t.vIdx < t.videos.length) {
+    if (t.videos?.[t.vIdx]) t.videos[t.vIdx].bad = true;
+    const nextOk = t.videos ? t.videos.findIndex(v => !v.bad) : -1;
+    if (nextOk >= 0) {
+      t.vIdx = nextOk;
       setStatus(`再生できない動画のため候補 ${t.vIdx + 1} を試します (code ${e.data})`);
       loadVideo(t);
     } else {
@@ -711,6 +744,37 @@
     $('nowVideo').textContent = `▶ ${v.title}（${v.channel}）`;
     state.player.loadVideoById(v.id);
     renderQueue();
+    renderCandidates(t);
+  }
+
+  function renderCandidates(t) {
+    const box = $('candList');
+    box.innerHTML = '';
+    $('candidates').hidden = !t?.videos?.length;
+    $('altBtn').disabled = !t?.videos || t.videos.filter(v => !v.bad).length < 2;
+    if (!t?.videos) return;
+    t.videos.forEach((v, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cand' + (i === t.vIdx ? ' current' : '') + (v.bad ? ' bad' : '');
+      b.title = v.bad ? '埋め込み再生できない動画です' : v.title;
+      const img = document.createElement('img'); img.src = v.thumb || ''; img.alt = ''; img.loading = 'lazy';
+      const ct = document.createElement('span'); ct.className = 'ct'; ct.textContent = (v.bad ? '⚠ ' : '') + v.title;
+      const cc = document.createElement('span'); cc.className = 'cc'; cc.textContent = v.channel;
+      b.append(img, ct, cc);
+      b.addEventListener('click', () => selectCandidate(i));
+      box.append(b);
+    });
+  }
+
+  function selectCandidate(i) {
+    const t = currentTrack();
+    if (!t?.videos?.[i]) return;
+    t.vIdx = i;
+    t.failed = false;
+    state.choice[trackKey(t)] = { id: t.videos[i].id, q: t.query };
+    store.set('mvChoice', state.choice);
+    loadVideo(t);
   }
 
   let playToken = 0;
@@ -723,10 +787,12 @@
     $('nowTitle').textContent = t.title;
     $('nowArtist').textContent = t.artist;
     $('nowVideo').textContent = '検索中…';
+    $('researchQ').value = '';
     ['prevBtn', 'playPauseBtn', 'nextBtn'].forEach(id => $(id).disabled = false);
     renderQueue();
+    renderCandidates(null);
     try {
-      if (!t.videos) { t.videos = await searchVideos(t); t.vIdx = 0; }
+      if (!t.videos) await loadCandidates(t);
       if (my !== playToken) return; // 検索中に別の曲が選ばれた
       if (!t.videos.length) throw new Error('検索結果が 0 件');
       t.failed = false;
@@ -746,7 +812,7 @@
   // 次の曲を先に検索しておき、曲間の待ち時間を減らす
   async function prefetch(p) {
     const t = state.tracks[state.order[p]];
-    if (t && !t.videos) { try { t.videos = await searchVideos(t); renderQueue(); } catch {} }
+    if (t && !t.videos) { try { await loadCandidates(t); renderQueue(); } catch {} }
   }
 
   function next() {
@@ -775,6 +841,27 @@
   $('amzFetchBtn').addEventListener('click', fetchAmazonPlaylist);
   $('startBtn').addEventListener('click', () => { saveSettings(); playAt(0); });
   $('nextBtn').addEventListener('click', next);
+  $('altBtn').addEventListener('click', () => {
+    const t = currentTrack();
+    if (!t?.videos) return;
+    for (let k = 1; k < t.videos.length; k++) {
+      const i = (t.vIdx + k) % t.videos.length;
+      if (!t.videos[i].bad) { selectCandidate(i); return; }
+    }
+  });
+  $('researchForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const t = currentTrack();
+    const q = $('researchQ').value.trim();
+    if (!t || !q) return;
+    setStatus(`「${q}」で検索中…`);
+    try {
+      await loadCandidates(t, q);
+      if (!t.videos.length) { setStatus('検索結果が 0 件でした', true); return; }
+      setStatus(`「${q}」の検索結果から選んでください`);
+      selectCandidate(0);
+    } catch (err) { setStatus(`検索失敗: ${err.message}`, true); }
+  });
   $('prevBtn').addEventListener('click', prev);
   $('playPauseBtn').addEventListener('click', () => {
     if (!state.player) return;
@@ -792,6 +879,7 @@
   });
   $('clearCacheBtn').addEventListener('click', () => {
     state.cache = {}; store.del('mvCache');
+    state.choice = {}; store.del('mvChoice');
     state.tracks.forEach(t => { t.videos = null; t.vIdx = 0; t.failed = false; });
     renderQueue();
     setStatus('検索キャッシュを削除しました');
