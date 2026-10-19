@@ -112,6 +112,8 @@
   .status.err { color: var(--danger); }
   details { margin-top: 12px; }
   summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  .filebtn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+  .filebtn:hover { border-color: var(--accent); }
   .check { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); margin: 0; }
 </style>
 </head>
@@ -154,7 +156,12 @@
         <label for="pasteArea">曲リスト（1行1曲：「曲名 - アーティスト」/ CSV / タブ区切り / Amazon Music Web からのコピーに対応）</label>
         <textarea id="pasteArea" placeholder="Lemon - 米津玄師&#10;Pretender - Official髭男dism&#10;夜に駆ける - YOASOBI"></textarea>
         <p class="hint">Amazon Music Web 版（music.amazon.co.jp）でプレイリストを開き、曲一覧を選択してコピー → そのまま貼り付けでも解析を試みます。</p>
-        <div class="row"><button id="parseBtn">リストを読み込む</button></div>
+        <p class="hint">Spotify のプレイリストは、エクスポートツール（Exportify など）で書き出した CSV ファイルをそのまま読み込めます。</p>
+        <div class="row">
+          <button id="parseBtn">リストを読み込む</button>
+          <label class="check" for="csvFile" style="cursor:pointer"><span class="filebtn">CSV ファイルを選択</span></label>
+          <input type="file" id="csvFile" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden>
+        </div>
       </div>
 
       <div id="tab-spotify" hidden>
@@ -274,7 +281,47 @@
   const DURATION = /^\d{1,2}:\d{2}(:\d{2})?$/;
   const NOISE = /^(曲名|タイトル|title|アーティスト|artist|アルバム|album|時間|duration|#|\d+|explicit|e|hd|uhd|lyrics|歌詞)$/i;
 
+  // 引用符付きフィールドに対応した CSV/TSV パーサー
+  function parseDelimited(text, sep) {
+    const rows = [];
+    let row = [], field = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) {
+        if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+        else field += c;
+      } else if (c === '"' && field === '') q = true;
+      else if (c === sep) { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(field); rows.push(row); row = []; field = '';
+      } else field += c;
+    }
+    if (field || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(r => r.some(f => f.trim()));
+  }
+
+  // ヘッダー行（Track Name / Artist Name(s) など）を持つ表形式を解析する
+  function parseTable(text) {
+    const first = text.split(/\r?\n/, 1)[0];
+    const sep = first.includes('\t') ? '\t' : ',';
+    if (!first.includes(sep)) return null;
+    const rows = parseDelimited(text.replace(/^\uFEFF/, ''), sep);
+    if (rows.length < 2) return null;
+    const head = rows[0].map(h => h.trim().toLowerCase());
+    const find = (re) => head.findIndex(h => re.test(h));
+    let ti = find(/^(track name|song name|track title|song title|曲名|タイトル)$/);
+    if (ti < 0) ti = find(/^(title|name|track|song)$/);
+    const ai = find(/artist|アーティスト/);
+    if (ti < 0 || ai < 0) return null;
+    return rows.slice(1)
+      .map(r => ({ title: (r[ti] || '').trim(), artist: (r[ai] || '').trim().replace(/\s*;\s*/g, ', ') }))
+      .filter(t => t.title);
+  }
+
   function parseTrackText(text) {
+    const table = parseTable(text);
+    if (table?.length) return table;
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     const out = [];
 
@@ -464,7 +511,8 @@
     if (!res.ok) {
       // 403 はプレーンテキストで理由が返ることがある（例: ユーザー未登録）
       let msg = json?.error?.message || text.trim().slice(0, 200) || `HTTP ${res.status}`;
-      if (res.status === 403) msg += ' → Spotify Developer Dashboard のアプリ設定「User Management」に、ログインした Spotify アカウントの名前とメールアドレスを登録してください';
+      if (/premium/i.test(msg)) msg = 'Spotify API を使うには、アプリ作成者のアカウントが Spotify Premium である必要があります。Premium がない場合は CSV 読み込みをご利用ください';
+      else if (res.status === 403) msg += ' → Spotify Developer Dashboard のアプリ設定「User Management」に、ログインした Spotify アカウントの名前とメールアドレスを登録してください';
       const err = new Error(msg); err.status = res.status; throw err;
     }
     return json;
@@ -709,6 +757,14 @@
     const list = parseTrackText(text);
     if (!list.length) { setStatus('曲を読み取れませんでした', true); return; }
     loadTracks(list);
+  });
+  $('csvFile').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    const text = await f.text();
+    $('pasteArea').value = text;
+    $('parseBtn').click();
   });
   $('amzFetchBtn').addEventListener('click', fetchAmazonPlaylist);
   $('startBtn').addEventListener('click', () => { saveSettings(); playAt(0); });
